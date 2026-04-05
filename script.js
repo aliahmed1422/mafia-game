@@ -1,4 +1,5 @@
 
+<script>
 /* ═══════════════════════════════════════
    ROLES DATABASE
 ═══════════════════════════════════════ */
@@ -471,15 +472,16 @@ function resolveNight(){
     renderDay(log);
 
     const w=checkWin();
+    // ★ onclick مباشر بدل cloneNode — آمن في جميع الجولات
+    let dayFired=false;
     const dayBtn=document.getElementById('day-btn');
+    dayBtn.disabled=false;
     if(w){
       dayBtn.textContent='🏆 كشف النتيجة';
-      const nb=dayBtn.cloneNode(true);dayBtn.replaceWith(nb);
-      nb.addEventListener('click',()=>endGame(w),{once:true});
+      dayBtn.onclick=function(){if(dayFired)return;dayFired=true;this.disabled=true;endGame(w);};
     } else {
       dayBtn.textContent='🗳️ ابدأ التصويت';
-      const nb=dayBtn.cloneNode(true);dayBtn.replaceWith(nb);
-      nb.addEventListener('click',startVote,{once:true});
+      dayBtn.onclick=function(){if(dayFired)return;dayFired=true;this.disabled=true;startVote();};
     }
     go('s-day');
   });
@@ -505,7 +507,7 @@ function renderDay(log){
 ═══════════════════════════════════════ */
 function startVote(){
   if(G.noVote){toast('🌩️ انقطاع الكهرباء — لا تصويت هذه الجولة!');setTimeout(()=>{G.round++;G.revealIdx=0;handoff(0,()=>doReveal(0),{to:`🌙 جولة ${G.round} — أعطِ الجوال لـ`});},1500);return;}
-  G.votes={};G.aliveAtVote=G.players.map((p,i)=>p.alive?i:-1).filter(i=>i>=0);G.voteIdx=0;
+  G.votes={};G.aliveAtVote=G.players.map((p,i)=>p.alive?i:-1).filter(i=>i>=0&&G.players[i].alive);G.voteIdx=0; // ★ فقط الأحياء
   nextVoter();
 }
 
@@ -526,27 +528,40 @@ function voteScreen(vi){
     btn.addEventListener('click',()=>{list.querySelectorAll('.pick-btn').forEach(b=>b.classList.remove('sel'));btn.classList.add('sel');vc.disabled=false;});
     list.appendChild(btn);
   });
-  const oldvc=document.getElementById('vote-ok');
-  const vc=oldvc.cloneNode(true);vc.disabled=true;vc.textContent='تأكيد التصويت ✓';oldvc.replaceWith(vc);
-  vc.addEventListener('click',function(){
+  // ★ onclick مباشر مع fired guard
+  let voteFired=false;
+  const vc=document.getElementById('vote-ok');
+  vc.disabled=true;vc.textContent='تأكيد التصويت ✓';
+  vc.onclick=function(){
+    if(voteFired)return;voteFired=true;
     this.disabled=true;
     const sel=list.querySelector('.pick-btn.sel');
     if(sel){G.votes[vi]=parseInt(sel.dataset.i);G.voteHistory.push(parseInt(sel.dataset.i));}
     G.voteIdx++;nextVoter();
-  },{once:true});
-  const oldsk=document.getElementById('vote-skip');
-  const sk=oldsk.cloneNode(true);oldsk.replaceWith(sk);
-  sk.addEventListener('click',function(){this.disabled=true;G.voteIdx++;nextVoter();},{once:true});
+  };
+  const sk=document.getElementById('vote-skip');
+  sk.onclick=function(){
+    if(voteFired)return;voteFired=true;
+    this.disabled=true;G.voteIdx++;nextVoter();
+  };
   go('s-vote');
 }
 
 function resolveVotes(){
+  // ★ احسب الأصوات — فقط من الأحياء ولأحياء
   const tally={};
   Object.entries(G.votes).forEach(([voter,target])=>{
+    if(!G.players[+voter]?.alive)return; // تجاهل أصوات الموتى
+    if(!G.players[target]?.alive)return; // تجاهل أهداف ميتة
     const t=G.reverseVote?parseInt(voter):target;
     tally[t]=(tally[t]||0)+1;
   });
-  const total=Object.values(G.votes).length;
+  const total=Object.values(G.votes).filter((_,i)=>{
+    const voter=Object.keys(G.votes)[i];
+    return G.players[+voter]?.alive;
+  }).length;
+
+  // رسم أشرطة الأصوات
   const barsEl=document.getElementById('vr-bars');barsEl.innerHTML='';
   G.players.forEach((p,i)=>{
     if(!p.alive)return;
@@ -557,17 +572,39 @@ function resolveVotes(){
       <div class="vr-bg"><div class="vr-fill" style="width:${pct}%"></div></div>
     </div>`;
   });
+
   let maxV=0,elims=[];
-  Object.entries(tally).forEach(([idx,c])=>{if(c>maxV){maxV=c;elims=[+idx];}else if(c===maxV)elims.push(+idx);});
+  Object.entries(tally).forEach(([idx,c])=>{
+    if(c>maxV){maxV=c;elims=[+idx];}
+    else if(c===maxV)elims.push(+idx);
+  });
+
   const elimEl=document.getElementById('elim-box');
-  if(!maxV||elims.length>1){
-    elimEl.innerHTML=`<div style="color:var(--muted);font-size:1.05rem;">🤷 تعادل — لم يُطرد أحد</div>`;
+
+  if(!maxV){
+    // لا أحد صوّت
+    elimEl.innerHTML=`<div style="color:var(--muted);font-size:1.05rem;margin-bottom:8px;">🤷 لم يصوت أحد — لا يُطرد أحد</div>`;
+  } else if(elims.length>1){
+    // ★ تعادل — كسر عشوائي
+    const luckyIdx=elims[Math.floor(Math.random()*elims.length)];
+    const ep=G.players[luckyIdx],er=RDB[ep.role]||RDB.citizen;
+    ep.alive=false;
+    if(ep.role==='joker')G.jokerWon=true;
+    const shownRole=ep.role==='deceiver'?Object.keys(RDB)[Math.floor(Math.random()*Object.keys(RDB).length)]:ep.role;
+    const sr=RDB[shownRole]||er;
+    elimEl.innerHTML=`
+      <div style="color:var(--orange);margin-bottom:8px;font-size:.85rem;">⚡ تعادل! كُسر عشوائياً</div>
+      <div style="color:var(--red2);margin-bottom:6px;font-size:.82rem;">طُرد من اللعبة</div>
+      <div style="font-size:2rem;font-weight:900;margin-bottom:6px;">${ep.name}</div>
+      <div style="font-size:1.1rem;color:${sr.color};">${sr.icon} كان ${sr.name}</div>
+      <div style="font-size:.75rem;color:var(--muted);margin-top:3px;">${sr.team}</div>
+      ${ep.role==='joker'?`<div style="margin-top:10px;color:var(--purple2);font-weight:700;">🃏 المهرج فاز بهدفه!</div>`:''}`;
   } else {
+    // فائز واضح
     const ep=G.players[elims[0]],er=RDB[ep.role]||RDB.citizen;
     ep.alive=false;
     if(ep.role==='joker')G.jokerWon=true;
-    // Deceiver: show fake role
-    const shownRole = ep.role==='deceiver' ? Object.keys(RDB)[Math.floor(Math.random()*Object.keys(RDB).length)] : ep.role;
+    const shownRole=ep.role==='deceiver'?Object.keys(RDB)[Math.floor(Math.random()*Object.keys(RDB).length)]:ep.role;
     const sr=RDB[shownRole]||er;
     elimEl.innerHTML=`
       <div style="color:var(--red2);margin-bottom:8px;font-size:.85rem;">طُرد من اللعبة</div>
@@ -577,15 +614,20 @@ function resolveVotes(){
       ${ep.role==='joker'?`<div style="margin-top:10px;color:var(--purple2);font-weight:700;">🃏 المهرج فاز بهدفه!</div>`:''}
       ${ep.role==='deceiver'&&shownRole!==ep.role?`<div style="margin-top:8px;color:var(--muted);font-size:.72rem;">(الدور الحقيقي سيُكشف في النهاية)</div>`:''}`;
   }
-  const nb2=document.getElementById('next-btn').cloneNode(true);
-  document.getElementById('next-btn').replaceWith(nb2);
-  nb2.addEventListener('click',function(){
+
+  // ★ زر التالي بـ onclick مباشر — لا cloneNode، يعمل في جميع الجولات
+  let nextFired=false;
+  const nextBtn=document.getElementById('next-btn');
+  nextBtn.disabled=false;
+  nextBtn.textContent='التالي →';
+  nextBtn.onclick=function(){
+    if(nextFired)return; nextFired=true;
     this.disabled=true;
     if(G.jokerWon){endGame('joker');return;}
     const w=checkWin();if(w){endGame(w);return;}
     G.round++;G.revealIdx=0;
     handoff(0,()=>doReveal(0),{to:`🌙 جولة ${G.round} — أعطِ الجوال لـ`});
-  },{once:true});
+  };
   go('s-vresult');
 }
 
@@ -742,3 +784,4 @@ function toast(msg){
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}}
 
 initSetup();
+</script>
